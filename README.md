@@ -3,6 +3,9 @@
 **Note: There is minimal error checking in this application.**
 
 ## Steps
+
+**Note: This is a minimal implementation of fetching posts from a specific user for BlueSky.**
+
 1. Compile and package the code, or download the executable.
 2. Create a directory, `bSkyFetch`, in the same directory as the executable with the following files:
    ```
