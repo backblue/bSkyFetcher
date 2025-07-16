@@ -5,6 +5,7 @@ import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.awt.*;
@@ -13,10 +14,12 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
+import java.util.Arrays;
 import java.util.Properties;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -84,25 +87,43 @@ public class Main {
         embed.setColor(Color.CYAN);
         StringBuilder desc = new StringBuilder(post.getJSONObject("record").getString("text"));
 
-        JSONArray facets = post.getJSONObject("record").getJSONArray("facets");
+        JSONArray facets = null;
+        try {
+            facets = post.getJSONObject("record").getJSONArray("facets");
+        } catch (JSONException ignored) {}
         int shiftedDesc = 0;
-        for (int i = 0; i < facets.length(); i++) {
+        for (int i = 0; facets != null && i < facets.length(); i++) {
             JSONObject facet = facets.getJSONObject(i);
             String type = facet.getJSONArray("features").getJSONObject(0).getString("$type");
             int start = facet.getJSONObject("index").getInt("byteStart") + shiftedDesc;
             int end = facet.getJSONObject("index").getInt("byteEnd") + shiftedDesc;
             if (type.equals("app.bsky.richtext.facet#link")) {
-                desc.insert(end, "](" + facet.getJSONArray("features").getJSONObject(0).getString("uri") + ")");
-                desc.insert(start, "[");
-                shiftedDesc += 4 + facet.getJSONArray("features").getJSONObject(0).getString("uri").length();
-            }
-            if (type.equals("app.bsky.richtext.facet#tag")) {
-                String hashtagLink = "https://bsky.app/hashtag/" + facet.getJSONArray("features").getJSONObject(0).getString("tag") + "?author=" + post.getJSONObject("author").getString("handle");
-                desc.insert(end, "](" + hashtagLink + ")");
-                desc.insert(start, "[");
-                shiftedDesc += 4 + hashtagLink.length();
-            }
+                byte[] descInBytes = desc.toString().getBytes();
 
+                byte[] descByteToLink = Arrays.copyOfRange(descInBytes, 0, start);
+                int sizeofDescByteToLink = descByteToLink.length + 1;
+                byte[] sizeofDescByteToLinkWithBracket = new byte[sizeofDescByteToLink];
+                System.arraycopy(descByteToLink, 0, sizeofDescByteToLinkWithBracket, 0, sizeofDescByteToLink - 1);
+                sizeofDescByteToLinkWithBracket[sizeofDescByteToLink - 1] = (byte) '[';
+                byte[] sizeofDescByteToLinkWithLeftBracketAndContent = new byte[sizeofDescByteToLink + (end - start) + 2];
+                System.arraycopy(sizeofDescByteToLinkWithBracket, 0, sizeofDescByteToLinkWithLeftBracketAndContent, 0, sizeofDescByteToLink);
+                byte[] linkInBytes = Arrays.copyOfRange(descInBytes, start, end);
+                System.arraycopy(linkInBytes, 0, sizeofDescByteToLinkWithLeftBracketAndContent, sizeofDescByteToLink, end - start);
+                sizeofDescByteToLinkWithLeftBracketAndContent[sizeofDescByteToLinkWithLeftBracketAndContent.length - 2] = ']';
+                sizeofDescByteToLinkWithLeftBracketAndContent[sizeofDescByteToLinkWithLeftBracketAndContent.length - 1] = '(';
+                byte[] linkUriInBytes = facet.getJSONArray("features").getJSONObject(0).getString("uri").getBytes();
+                byte[] descWithURI = new byte[sizeofDescByteToLinkWithLeftBracketAndContent.length + linkUriInBytes.length + 1];
+                System.arraycopy(sizeofDescByteToLinkWithLeftBracketAndContent, 0, descWithURI, 0, sizeofDescByteToLinkWithLeftBracketAndContent.length);
+                System.arraycopy(linkUriInBytes, 0, descWithURI, sizeofDescByteToLinkWithLeftBracketAndContent.length, linkUriInBytes.length);
+                descWithURI[descWithURI.length - 1] = ')';
+                byte[] restOfDescInBytes = Arrays.copyOfRange(descInBytes, end, descInBytes.length);
+                desc = new StringBuilder(new String(descWithURI, StandardCharsets.UTF_8));
+                desc.append(new String(restOfDescInBytes, StandardCharsets.UTF_8));
+
+                //desc.insert(start, "[");
+                //desc.insert(end+1, "](" + facet.getJSONArray("features").getJSONObject(0).getString("uri") + ")");
+                shiftedDesc += 4 + facet.getJSONArray("features").getJSONObject(0).getString("uri").getBytes().length;
+            }
         }
 
         embed.setDescription(desc);
@@ -112,7 +133,9 @@ public class Main {
         embed.setAuthor(post.getJSONObject("author").getString("displayName"),
                 "https://bsky.app/profile/" + post.getJSONObject("author").getString("handle"),
                 post.getJSONObject("author").getString("avatar"));
-        embed.setImage(post.getJSONObject("embed").getJSONObject("external").getString("thumb"));
+        try {
+            embed.setImage(post.getJSONObject("embed").getJSONObject("external").getString("thumb"));
+        } catch (JSONException ignored) {}
 
         String[] parts = post.getString("uri").split("/");
         String rKey = parts[parts.length - 1];
@@ -127,7 +150,7 @@ public class Main {
         Files.writeString(Path.of("bSkyFetch/cache.json"), cache.toString());
     }
 
-    public static void main(String[] args) throws IOException {
+    public static void main(String[] args) throws IOException, InterruptedException {
         try {
             JSONObject cache = new JSONObject(Files.readString(Path.of("bSkyFetch/cache.json")));
             lastPostStamp = Instant.parse(cache.getString("lastTimestamp"));
@@ -152,6 +175,7 @@ public class Main {
             bot = null;
         }
         long timespan = Long.parseLong((String) PROPERTIES.get("COOLDOWN"));
+        refreshForPosts(bot);
         scheduler.scheduleWithFixedDelay(() -> {
             try {
                 if (PROPERTIES.get("DEBUG").equals("true")) {
@@ -163,6 +187,6 @@ public class Main {
             } catch (IOException | InterruptedException e) {
                 throw new RuntimeException(e);
             }
-        }, 0L, timespan, java.util.concurrent.TimeUnit.SECONDS);
+        }, timespan, timespan, java.util.concurrent.TimeUnit.SECONDS);
     }
 }
