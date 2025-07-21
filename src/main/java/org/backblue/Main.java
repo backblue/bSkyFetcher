@@ -69,15 +69,33 @@ public class Main {
         JSONObject data = new JSONObject(responseHttp.body());
 
         JSONArray feed = data.getJSONArray("feed");
-
-        return feed.getJSONObject(0).getJSONObject("post");
+        if (feed.isEmpty()) {
+            return null;
+        } else if (feed.length() == 1) {
+            return feed.getJSONObject(0).getJSONObject("post");
+        } else {
+            JSONObject firstPost = feed.getJSONObject(0).getJSONObject("post");
+            if (firstPost.getJSONObject("viewer").getBoolean("pinned")) {
+                Instant firstPostTimestamp = Instant.parse(firstPost.getJSONObject("record").getString("createdAt"));
+                if (firstPostTimestamp.toEpochMilli() > lastPostStamp.toEpochMilli()) {
+                    return firstPost;
+                } else {
+                    return feed.getJSONObject(1).getJSONObject("post");
+                }
+            } else {
+                return firstPost;
+            }
+        }
     }
 
     public static void refreshForPosts(JDA bot) throws IOException, InterruptedException {
         JSONObject post = doTheThing();
+        if (post == null) {
+            return;
+        }
 
         Instant createdAt = Instant.parse(post.getJSONObject("record").getString("createdAt"));
-        if (lastPostStamp.toString().equals(createdAt.toString())) {
+        if (lastPostStamp.toEpochMilli() >= createdAt.toEpochMilli()) {
             System.out.println("Already posted this one, skipping.");
             return;
         }
